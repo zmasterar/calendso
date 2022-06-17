@@ -34,9 +34,11 @@ import { z } from "zod";
 
 import { SelectGifInput } from "@calcom/app-store/giphy/components";
 import getApps, { getLocationOptions } from "@calcom/app-store/utils";
+import { parseRecurringEvent } from "@calcom/lib";
 import { CAL_URL, WEBAPP_URL } from "@calcom/lib/constants";
 import { useLocale } from "@calcom/lib/hooks/useLocale";
 import showToast from "@calcom/lib/notification";
+import prisma from "@calcom/prisma";
 import { StripeData } from "@calcom/stripe/server";
 import { RecurringEvent } from "@calcom/types/Calendar";
 import { Alert } from "@calcom/ui/Alert";
@@ -52,7 +54,6 @@ import { getSession } from "@lib/auth";
 import { HttpError } from "@lib/core/http/error";
 import { isSuccessRedirectAvailable } from "@lib/isSuccessRedirectAvailable";
 import { LocationObject, LocationType } from "@lib/location";
-import prisma from "@lib/prisma";
 import { slugify } from "@lib/slugify";
 import { trpc } from "@lib/trpc";
 import { inferSSRProps } from "@lib/types/inferSSRProps";
@@ -112,7 +113,7 @@ export type FormValues = {
   description: string;
   disableGuests: boolean;
   requiresConfirmation: boolean;
-  recurringEvent: RecurringEvent;
+  recurringEvent: RecurringEvent | null;
   schedulingType: SchedulingType | null;
   price: number;
   currency: string;
@@ -328,6 +329,7 @@ const EventTypePage = (props: inferSSRProps<typeof getServerSideProps>) => {
   const minSeats = 2;
   const [enableSeats, setEnableSeats] = useState(!!eventType.seatsPerTimeSlot);
 
+  const [displayNameTips, setDisplayNameTips] = useState(false);
   const periodType =
     PERIOD_TYPES.find((s) => s.type === eventType.periodType) ||
     PERIOD_TYPES.find((s) => s.type === "UNLIMITED");
@@ -476,7 +478,7 @@ const EventTypePage = (props: inferSSRProps<typeof getServerSideProps>) => {
   const formMethods = useForm<FormValues>({
     defaultValues: {
       locations: eventType.locations || [],
-      recurringEvent: eventType.recurringEvent || {},
+      recurringEvent: eventType.recurringEvent || null,
       schedule: eventType.schedule?.id,
       periodDates: {
         startDate: periodDates.startDate,
@@ -863,7 +865,6 @@ const EventTypePage = (props: inferSSRProps<typeof getServerSideProps>) => {
 
   const membership = team?.members.find((membership) => membership.user.id === props.session.user.id);
   const isAdmin = membership?.role === MembershipRole.OWNER || membership?.role === MembershipRole.ADMIN;
-
   return (
     <div>
       <Shell
@@ -1188,8 +1189,19 @@ const EventTypePage = (props: inferSSRProps<typeof getServerSideProps>) => {
                                 className="block w-full rounded-sm border-gray-300 text-sm "
                                 placeholder={t("meeting_with_user")}
                                 defaultValue={eventType.eventName || ""}
+                                onFocus={() => setDisplayNameTips(true)}
                                 {...formMethods.register("eventName")}
                               />
+                              {displayNameTips && (
+                                <div className="mt-1 text-gray-500">
+                                  <p>{`{HOST} = ${t("your_name")}`}</p>
+                                  <p>{`{ATTENDEE} = ${t("attendee_name")}`}</p>
+                                  <p>{`{HOST/ATTENDEE} = ${t(
+                                    "dynamically_display_attendee_or_organizer"
+                                  )}`}</p>
+                                  <p>{`{LOCATION} = ${t("event_location")}`}</p>
+                                </div>
+                              )}
                             </div>
                           </div>
                         </div>
@@ -1318,8 +1330,8 @@ const EventTypePage = (props: inferSSRProps<typeof getServerSideProps>) => {
                               id="requiresConfirmation"
                               descriptionAsLabel
                               name="requiresConfirmation"
-                              label={t("opt_in_booking")}
-                              description={t("opt_in_booking_description")}
+                              label={t("requires_confirmation")}
+                              description={t("requires_confirmation_description")}
                               defaultChecked={eventType.requiresConfirmation}
                               disabled={enableSeats}
                               checked={value}
@@ -1998,6 +2010,7 @@ const EventTypePage = (props: inferSSRProps<typeof getServerSideProps>) => {
                     {t("delete")}
                   </DialogTrigger>
                   <ConfirmationDialogContent
+                    isLoading={deleteMutation.isLoading}
                     variety="danger"
                     title={t("delete_event_type")}
                     confirmBtnText={t("confirm_delete_event_type")}
@@ -2236,7 +2249,7 @@ export const getServerSideProps = async (context: GetServerSidePropsContext) => 
   const { locations, metadata, ...restEventType } = rawEventType;
   const eventType = {
     ...restEventType,
-    recurringEvent: (restEventType.recurringEvent || {}) as RecurringEvent,
+    recurringEvent: parseRecurringEvent(restEventType.recurringEvent),
     locations: locations as unknown as LocationObject[],
     metadata: (metadata || {}) as JSONObject,
     isWeb3Active:

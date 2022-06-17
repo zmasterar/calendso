@@ -23,10 +23,12 @@ import {
   useIsBackgroundTransparent,
   useIsEmbed,
 } from "@calcom/embed-core/embed-iframe";
+import { parseRecurringEvent } from "@calcom/lib";
 import { getDefaultEvent } from "@calcom/lib/defaultEvents";
 import { useLocale } from "@calcom/lib/hooks/useLocale";
+import { getEveryFreqFor } from "@calcom/lib/recurringStrings";
 import { localStorage } from "@calcom/lib/webstorage";
-import { RecurringEvent } from "@calcom/types/Calendar";
+import { Prisma } from "@calcom/prisma/client";
 import Button from "@calcom/ui/Button";
 import { EmailInput } from "@calcom/ui/form/fields";
 
@@ -148,7 +150,7 @@ type SuccessProps = inferSSRProps<typeof getServerSideProps>;
 export default function Success(props: SuccessProps) {
   const { t } = useLocale();
   const router = useRouter();
-  const { location: _location, name, reschedule, listingStatus, status } = router.query;
+  const { location: _location, name, reschedule, listingStatus, status, isSuccessBookingPage } = router.query;
   const location = Array.isArray(_location) ? _location[0] : _location;
   const [is24h, setIs24h] = useState(isBrowserLocale24h());
   const { data: session } = useSession();
@@ -164,17 +166,22 @@ export default function Success(props: SuccessProps) {
 
   const attendeeName = typeof name === "string" ? name : "Nameless";
 
+  const locationFromEventType = !!eventType.locations
+    ? (eventType.locations as Array<{ type: string }>)[0]
+    : "";
+  const locationType = !!locationFromEventType ? locationFromEventType.type : "";
   const eventNameObject = {
     attendeeName,
     eventType: props.eventType.title,
     eventName: (props.dynamicEventName as string) || props.eventType.eventName,
     host: props.profile.name || "Nameless",
+    location: locationType,
     t,
   };
   const metadata = props.eventType?.metadata as { giphyThankYouPage: string };
   const giphyImage = metadata?.giphyThankYouPage;
 
-  const eventName = getEventName(eventNameObject);
+  const eventName = getEventName(eventNameObject, true);
   const needsConfirmation = eventType.requiresConfirmation && reschedule != "true";
   const isCancelled = status === "CANCELLED" || status === "REJECTED";
   const telemetry = useTelemetry();
@@ -251,7 +258,7 @@ export default function Success(props: SuccessProps) {
     return t("emailed_you_and_attendees" + titleSuffix);
   }
   const userIsOwner = !!(session?.user?.id && eventType.users.find((user) => (user.id = session.user.id)));
-  const { isReady, Theme } = useTheme(userIsOwner ? "light" : props.profile.theme);
+  const { isReady, Theme } = useTheme(isSuccessBookingPage ? props.profile.theme : "light");
   const title = t(
     `booking_${needsConfirmation ? "submitted" : "confirmed"}${props.recurringBookings ? "_recurring" : ""}`
   );
@@ -264,7 +271,7 @@ export default function Success(props: SuccessProps) {
           data-testid="success-page">
           {userIsOwner && !isEmbed && (
             <div className="-mb-7 ml-9 mt-7">
-              <Link href="/bookings">
+              <Link href={eventType.recurringEvent?.count ? "/bookings/recurring" : "/bookings"}>
                 <a className="flex items-center text-black dark:text-white">
                   <ArrowLeftIcon className="mr-1 h-4 w-4" /> {t("back_to_bookings")}
                 </a>
@@ -338,10 +345,9 @@ export default function Success(props: SuccessProps) {
                           <div className="font-medium">{t("when")}</div>
                           <div className="col-span-2 mb-6">
                             <RecurringBookings
-                              isReschedule={reschedule === "true"}
                               eventType={props.eventType}
                               recurringBookings={props.recurringBookings}
-                              listingStatus={(listingStatus as string) || "upcoming"}
+                              listingStatus={(listingStatus as string) || "recurring"}
                               date={date}
                               is24h={is24h}
                             />
@@ -423,19 +429,24 @@ export default function Success(props: SuccessProps) {
                             <button className="underline" onClick={() => setIsCancellationMode(true)}>
                               {t("cancel")}
                             </button>
-                            <div className="mx-2">{t("or_lowercase")}</div>
-                            <div className="underline">
-                              <Link href={"/reschedule/" + bookingInfo?.uid}>{t("Reschedule")}</Link>
-                            </div>
+                            {!props.recurringBookings && (
+                              <>
+                                <div className="mx-2">{t("or_lowercase")}</div>
+                                <div className="underline">
+                                  <Link href={"/reschedule/" + bookingInfo?.uid}>{t("Reschedule")}</Link>
+                                </div>
+                              </>
+                            )}
                           </div>
                         </div>
                       ) : (
                         <CancelBooking
                           booking={{ uid: bookingInfo?.uid, title: bookingInfo?.title }}
                           profile={{ name: props.profile.name, slug: props.profile.slug }}
+                          recurringEvent={eventType.recurringEvent}
                           team={eventType?.team?.name}
                           setIsCancellationMode={setIsCancellationMode}
-                          theme={userIsOwner ? "light" : props.profile.theme}
+                          theme={isSuccessBookingPage ? props.profile.theme : "light"}
                         />
                       ))}
                     {userIsOwner && !needsConfirmation && !isCancellationMode && !isCancelled && (
@@ -543,7 +554,7 @@ export default function Success(props: SuccessProps) {
                         </div>
                       </div>
                     )}
-                    {!(userIsOwner || props.hideBranding) && (
+                    {session === null && !(userIsOwner || props.hideBranding) && (
                       <div className="border-bookinglightest text-booking-lighter pt-4 text-center text-xs dark:border-gray-900 dark:text-white">
                         <a href="https://cal.com/signup">{t("create_booking_link_with_calcom")}</a>
 
@@ -599,7 +610,6 @@ export default function Success(props: SuccessProps) {
 }
 
 type RecurringBookingsProps = {
-  isReschedule: boolean;
   eventType: SuccessProps["eventType"];
   recurringBookings: SuccessProps["recurringBookings"];
   date: dayjs.Dayjs;
@@ -607,19 +617,23 @@ type RecurringBookingsProps = {
   listingStatus: string;
 };
 
-function RecurringBookings({
-  isReschedule = false,
-  eventType,
-  recurringBookings,
-  date,
-  listingStatus,
-}: RecurringBookingsProps) {
+function RecurringBookings({ eventType, recurringBookings, date, listingStatus }: RecurringBookingsProps) {
   const [moreEventsVisible, setMoreEventsVisible] = useState(false);
   const { t } = useLocale();
-  return !isReschedule && recurringBookings && listingStatus === "upcoming" ? (
+
+  const recurringBookingsSorted = recurringBookings
+    ? recurringBookings.sort((a, b) => (dayjs(a).isAfter(dayjs(b)) ? 1 : -1))
+    : null;
+
+  return recurringBookingsSorted && listingStatus === "recurring" ? (
     <>
+      {eventType.recurringEvent?.count && (
+        <span className="font-medium">
+          {getEveryFreqFor({ t, recurringEvent: eventType.recurringEvent })}
+        </span>
+      )}
       {eventType.recurringEvent?.count &&
-        recurringBookings.slice(0, 4).map((dateStr, idx) => (
+        recurringBookingsSorted.slice(0, 4).map((dateStr, idx) => (
           <div key={idx} className="mb-2">
             {dayjs(dateStr).format("MMMM DD, YYYY")}
             <br />
@@ -629,16 +643,16 @@ function RecurringBookings({
             </span>
           </div>
         ))}
-      {recurringBookings.length > 4 && (
+      {recurringBookingsSorted.length > 4 && (
         <Collapsible open={moreEventsVisible} onOpenChange={() => setMoreEventsVisible(!moreEventsVisible)}>
           <CollapsibleTrigger
             type="button"
             className={classNames("flex w-full", moreEventsVisible ? "hidden" : "")}>
-            {t("plus_more", { count: recurringBookings.length - 4 })}
+            {t("plus_more", { count: recurringBookingsSorted.length - 4 })}
           </CollapsibleTrigger>
           <CollapsibleContent>
             {eventType.recurringEvent?.count &&
-              recurringBookings.slice(4).map((dateStr, idx) => (
+              recurringBookingsSorted.slice(4).map((dateStr, idx) => (
                 <div key={idx} className="mb-2">
                   {dayjs(dateStr).format("MMMM DD, YYYY")}
                   <br />
@@ -665,7 +679,7 @@ function RecurringBookings({
 }
 
 const getEventTypesFromDB = async (id: number) => {
-  return await prisma.eventType.findUnique({
+  const eventType = await prisma.eventType.findUnique({
     where: {
       id,
     },
@@ -679,6 +693,7 @@ const getEventTypesFromDB = async (id: number) => {
       requiresConfirmation: true,
       userId: true,
       successRedirectUrl: true,
+      locations: true,
       users: {
         select: {
           id: true,
@@ -703,6 +718,15 @@ const getEventTypesFromDB = async (id: number) => {
       metadata: true,
     },
   });
+
+  if (!eventType) {
+    return eventType;
+  }
+
+  return {
+    isDynamic: false,
+    ...eventType,
+  };
 };
 
 const strToNumber = z.string().transform((val, ctx) => {
@@ -741,7 +765,6 @@ export async function getServerSideProps(context: GetServerSidePropsContext) {
   } = parsedQuery.data;
 
   const eventTypeRaw = !eventTypeId ? getDefaultEvent(eventTypeSlug) : await getEventTypesFromDB(eventTypeId);
-
   if (!eventTypeRaw) {
     return {
       notFound: true,
@@ -793,7 +816,7 @@ export async function getServerSideProps(context: GetServerSidePropsContext) {
 
   const eventType = {
     ...eventTypeRaw,
-    recurringEvent: (eventTypeRaw.recurringEvent || {}) as RecurringEvent,
+    recurringEvent: parseRecurringEvent(eventTypeRaw.recurringEvent),
   };
 
   const profile = {
@@ -805,13 +828,26 @@ export async function getServerSideProps(context: GetServerSidePropsContext) {
     slug: eventType.team?.slug || eventType.users[0]?.username || null,
   };
 
+  const where: Prisma.BookingWhereInput = {
+    id: bookingId,
+    attendees: { some: { email, name } },
+  };
+  // Dynamic Event uses EventType from @calcom/lib/defaultEvents(a fake EventType) which doesn't have a real user/team/eventTypeId
+  // So, you can't look them up in DB.
+  if (!eventType.isDynamic) {
+    // A Team Event doesn't have a correct user query param as of now. It is equal to team/{eventSlug} which is not a user, so you can't look it up in DB.
+    if (!eventType.team) {
+      // username being equal to profile.slug isn't applicable for Team or Dynamic Events.
+      where.user = { username };
+    }
+    where.eventTypeId = eventType.id;
+  } else {
+    // username being equal to eventSlug for Dynamic Event Booking, it can't be used for user lookup. So, just use eventTypeId which would always be null for Dynamic Event Bookings
+    where.eventTypeId = null;
+  }
+
   const bookingInfo = await prisma.booking.findFirst({
-    where: {
-      id: bookingId,
-      eventTypeId: eventType.id,
-      user: { username },
-      attendees: { some: { email, name } },
-    },
+    where,
     select: {
       title: true,
       uid: true,
@@ -819,6 +855,7 @@ export async function getServerSideProps(context: GetServerSidePropsContext) {
       customInputs: true,
       user: {
         select: {
+          id: true,
           name: true,
           email: true,
         },
