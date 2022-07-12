@@ -84,6 +84,11 @@ const nextConfig = {
   async rewrites() {
     return [
       {
+        source: "/",
+        destination: "/zmaster",
+        locale: false,
+      },
+      {
         source: "/:user/avatar.png",
         destination: "/api/user/avatar?username=:user",
       },
@@ -95,6 +100,11 @@ const nextConfig = {
   },
   async redirects() {
     const redirects = [
+      {
+        source: "/login",
+        destination: "/auth/login",
+        permanent: false,
+      },
       {
         source: "/settings",
         destination: "/settings/profile",

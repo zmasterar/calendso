@@ -13,7 +13,7 @@ import Button from "@calcom/ui/Button";
 import { EmailField, Form, PasswordField } from "@calcom/ui/form/fields";
 
 import { ErrorCode, getSession } from "@lib/auth";
-import { WEBAPP_URL, WEBSITE_URL } from "@lib/config/constants";
+import { WEBAPP_URL } from "@lib/config/constants";
 import { useLocale } from "@lib/hooks/useLocale";
 import { hostedCal, isSAMLLoginEnabled, samlProductID, samlTenantID } from "@lib/saml";
 import { collectPageParameters, telemetryEventTypes, useTelemetry } from "@lib/telemetry";
@@ -73,14 +73,7 @@ export default function Login({
 
   callbackUrl = getSafeRedirectUrl(callbackUrl);
 
-  const LoginFooter = (
-    <span>
-      {t("dont_have_an_account")}{" "}
-      <a href={`${WEBSITE_URL}/signup`} className="font-medium text-neutral-900">
-        {t("create_an_account")}
-      </a>
-    </span>
-  );
+  const LoginFooter = <></>;
 
   const TwoFactorFooter = (
     <Button
